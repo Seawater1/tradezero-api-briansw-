@@ -127,3 +127,18 @@ class Portfolio:
             cancel_button = self.driver.find_element(
                 By.XPATH, f'//div[@id="portfolio-content-tab-ao-1"]//*[@order-id="{order_id}"]/td[@class="red"]')
             cancel_button.click()
+    
+    def get_funds(self):
+        money = self.driver.find_element_by_id("h-equity-value").text
+        exposure = self.driver.find_element_by_id("h-exposure-value").text
+        money = money.replace(",","")
+        money = money.replace("$","")
+        money = float(money)
+    
+        exposure = exposure.replace(",","")
+        exposure = exposure.replace("$","")
+        exposure = float(exposure)
+    
+        available_funds = round((money), 2)
+
+        return available_funds
