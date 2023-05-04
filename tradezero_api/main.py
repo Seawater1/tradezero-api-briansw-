@@ -12,6 +12,10 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import Select
 from selenium.common.exceptions import NoSuchElementException, WebDriverException, StaleElementReferenceException
+
+from selenium.webdriver.support import expected_conditions as ec
+from selenium.webdriver.support.wait import WebDriverWait
+
 from termcolor import colored
 
 from .time_helpers import Time, Timer, time_it
@@ -244,11 +248,10 @@ class TradeZero(Time):
             return quantity
         return int(quantity)
 
-    def locate_stock(self, symbol: str, share_amount: int, max_price: float = 0, debug_info: bool = False):
+    def locate_stock(self,buy_locates, symbol: str, share_amount: int, max_locate_by_price: float = 0 , debug_info: bool = False):
         """
         Locate a stock, requires: stock symbol, and share_amount. optional: max_price.
         if the locate_price is less than max_price: it will accept, else: decline.
-
         :param symbol: str, symbol to locate.
         :param share_amount: int, must be a multiple of 100 (100, 200, 300...)
         :param max_price: float, default: 0, total price you are willing to pay for locates
@@ -256,21 +259,37 @@ class TradeZero(Time):
         :return: named tuple with the following attributes: 'price_per_share' and 'total'
         :raises Exception: if share_amount is not divisible by 100
         """
-        Data = namedtuple('Data', ['price_per_share', 'total'])
+        locate_pps = 0.00
+        locate_total = 0.00
+        locate_log = False
+        notification = 'None'
+        last_price = 0
+        located_shares_qty = 0 
+        # Data = namedtuple('Data', ['price_per_share', 'total'])
 
         if share_amount is not None and share_amount % 100 != 0:
             raise Exception(f'ERROR: share_amount is not divisible by 100 ({share_amount=})')
-
+            notification = 'share_amount is not divisible by 100'
+            return locate_pps, locate_total, locate_log, notification, located_shares_qty
+        
         if not self.load_symbol(symbol):
             return
-
-        if self.last <= 1.00:
+        
+        last_price = self.last 
+        if last_price <= 1.00:
+            
             print(f'Error: Cannot locate stocks priced under $1.00 ({symbol=}, price={self.last})')
+            notification = ' < $1.00 '
+            return locate_pps, locate_total, locate_log,last_price, notification, located_shares_qty
+        
+        # self.driver.find_element(By.ID, "locate-tab-1").click()
+        WebDriverWait(self.driver, 20).until(ec.element_to_be_clickable((By.ID, "locate-tab-1"))).click()
 
-        self.driver.find_element(By.ID, "locate-tab-1").click()
         input_symbol = self.driver.find_element(By.ID, "short-list-input-symbol")
         input_symbol.clear()
-        input_symbol.send_keys(symbol, Keys.RETURN)
+        input_symbol.send_keys(symbol)
+        time.sleep(1)
+        input_symbol.send_keys(Keys.RETURN)
 
         input_shares = self.driver.find_element(By.ID, "short-list-input-shares")
         input_shares.clear()
@@ -280,13 +299,22 @@ class TradeZero(Time):
             time.sleep(0.1)
 
         if self.driver.find_element(By.ID, "short-list-locate-status").text == 'Easy to borrow':
-            locate_pps = 0.00
-            locate_total = 0.00
+            
             if debug_info:
-                print(colored(f'Stock ({symbol}) is "Easy to borrow"', 'green'))
-            return Data(locate_pps, locate_total)
+                print(f'Stock ({symbol})Easy to borrow')
+                # print(colored(f'Stock ({symbol}) is "Easy to borrow"', 'green'))
+            notification = 'ETB'
+            locate_log = True
+            return locate_pps, locate_total, locate_log,last_price, notification, located_shares_qty 
 
-        self.driver.find_element(By.ID, "short-list-button-locate").click()
+        # self.driver.find_element(By.ID, "short-list-button-locate").click()
+        WebDriverWait(self.driver, 15).until(ec.element_to_be_clickable((By.ID, "short-list-button-locate"))).click()
+        # wait for price to be loaded
+        try:
+            WebDriverWait(self.driver, 20).until(ec.presence_of_element_located((By.CLASS_NAME, "icon-box-accept")))
+        except:
+            print('locate accept button never appeared')
+
 
         for i in range(300):
             try:
@@ -298,22 +326,92 @@ class TradeZero(Time):
                 time.sleep(0.15)
                 if i == 15 or i == 299:
                     insufficient_bp = 'Insufficient BP to short a position with requested quantity.'
+                    no_shares_available ='No shares are available at the moment. We are working to locate more. Please check again in a few minutes'
+                    error_getting_accc = 'Error: Error getting account details.'
+                    market_closed_error = 'Locates are not available when the market is closed'
+                    nosharessaccepted =  'NoSharesAccepted: We could not secure the quantity requested.'
                     last_notif = self.Notification.get_last_notification_message()
                     if insufficient_bp in last_notif:
                         warnings.warn(f"ERROR! {insufficient_bp}")
-                        return
+                        notification = '< BP}'
+                        # print(insufficient_bp)
+                        return locate_pps, locate_total, locate_log,last_price, notification, located_shares_qty
+                    if no_shares_available in last_notif:
+                        warnings.warn(f"ERROR! {no_shares_available}")
+                        notification = 'no_shares_available at the moment'
+                        # print(no_shares_available)
+                        return locate_pps, locate_total, locate_log,last_price, notification, located_shares_qty
+                    if error_getting_accc in last_notif:
+                        warnings.warn(f"ERROR! {error_getting_accc}")
+                        notification = 'Error Acc}'
+                        # print(error_getting_accc)
+                        return locate_pps, locate_total, locate_log,last_price, notification, located_shares_qty
+                    if market_closed_error in last_notif:
+                        warnings.warn(f"ERROR! {market_closed_error}")
+                        notification ='mkt_closed'
+                        # print(market_closed_error)
+                        return locate_pps, locate_total, locate_log,last_price, notification, located_shares_qty
+                    else:
+                        notification = (f'unknow locate error ({symbol=})')
+                        # print('unknow locate error')
+                        return locate_pps, locate_total, locate_log,last_price, notification, located_shares_qty
+                    if nosharessaccepted in last_notif:
+                        warnings.warn(f"ERROR! {nosharessaccepted}")
+                        notification ='nosharessaccepted'
+                        # print(market_closed_error)
+                        return locate_pps, locate_total, locate_log,last_price, notification, located_shares_qty
+                    else:
+                        notification = (f'unknow locate error ({symbol=})')
+                        # print('unknow locate error')
+                        return locate_pps, locate_total, locate_log,last_price, notification, located_shares_qty
+ 
         else:
             raise Exception(f'Error: not able to locate symbol element ({symbol=})')
 
-        if locate_total <= max_price:
-            self.driver.find_element(By.XPATH, f'//*[@id="oitem-l-{symbol.upper()}-cell-8"]/span[1]').click()
-            if debug_info:
-                print(colored(f'HTB Locate accepted ({symbol}, $ {locate_total})', 'cyan'))
+        
+        locate_max_pps = last_price * max_locate_by_price
+        print(locate_max_pps)
+        if locate_pps <= locate_max_pps:
+            if buy_locates == True:
+                # Click accept button
+                self.driver.find_element(By.XPATH, f'//*[@id="oitem-l-{symbol.upper()}-cell-8"]/span[1]').click()
+                start_time = time.time()
+                while time.time() - start_time < 5:
+                    self.driver.find_element_by_id('locate-tab-1').click()
+
+                    located_symbols = self.driver.find_elements(By.XPATH, '//*[@id="locate-inventory-table"]/tbody/tr/td[1]')
+                    located_symbols = [x.text for x in located_symbols]
+                    print('located_symbols',located_symbols)
+                    if symbol.upper() in located_symbols:
+                        locate_log = True
+                        print(f'{symbol} is in Inventory')
+                        # check share qty
+                        located_shares_qty = float(self.driver.find_element(By.ID, f"inv-{symbol.upper()}-cell-1").text)
+                        print('located_shares',located_shares_qty)
+                        break
+                    else:
+                        locate_log = False
+                        print(f'{symbol} is not in Inventory testing in main api')
+                        print('sleeping .5 sec')
+                        time.sleep(.5)  # add a 1-second sleep before the next iteration
+                    
+                return locate_pps, locate_total, locate_log, last_price, notification, located_shares_qty
+                
+                if debug_info:
+                    notification = f'HTB Locate accepted ({symbol}, $ {locate_total})'
+                    print(f'HTB Locate accepted ({symbol}, $ {locate_total})')
+                    # print(colored(f'HTB Locate accepted ({symbol}, $ {locate_total})', 'cyan'))
+            else:
+                self.driver.find_element(By.XPATH, f'//*[@id="oitem-l-{symbol.upper()}-cell-8"]/span[2]').click()
+                return locate_pps, locate_total, locate_log,last_price, notification, located_shares_qty
+                
+    
+                
         else:
             self.driver.find_element(By.XPATH, f'//*[@id="oitem-l-{symbol.upper()}-cell-8"]/span[2]').click()
-
-        return Data(locate_pps, locate_total)
-        # TODO create a function to get the pps and another one that just locates the shares
+            print('Locates are to expesive????????????')
+            notification = 'Locates are to expesive'
+            return locate_pps, locate_total, locate_log,last_price, notification ,located_shares_qty 
 
     def credit_locates(self, symbol: str, quantity=None):
         """
@@ -411,25 +509,40 @@ class TradeZero(Time):
         order_direction = order_direction.value
         time_in_force = time_in_force.value
 
-        if not self.time_between((9, 30), (16, 0)):
-            raise Exception(f'Error: Market orders are not allowed at this time ({self.time})')
+
 
         if time_in_force not in ['DAY', 'GTC', 'GTX']:
-            raise AttributeError(f"Error: time_in_force argument must be one of the following: 'DAY', 'GTC', 'GTX'")
+            raise AttributeError("Error: time_in_force argument must be one of the following: 'DAY', 'GTC', 'GTX'")
 
         self.load_symbol(symbol)
-
-        order_menu = Select(self.driver.find_element(By.ID, "trading-order-select-type"))
-        order_menu.select_by_index(0)
-
-        tif_menu = Select(self.driver.find_element(By.ID, "trading-order-select-time"))
-        tif_menu.select_by_visible_text(time_in_force)
-
+        # Input share qty
         input_quantity = self.driver.find_element(By.ID, "trading-order-input-quantity")
         input_quantity.clear()
+        print('Inputting share amount of ',share_amount)
         input_quantity.send_keys(share_amount)
+        # Select MKT order
+        order_menu = Select(self.driver.find_element(By.ID, "trading-order-select-type"))
+        order_menu.select_by_index(0)
+        # Select time in force
+        tif_menu = Select(self.driver.find_element(By.ID, "trading-order-select-time"))
+        tif_menu.select_by_visible_text(time_in_force)
+        # Check if the market is open
+        attempts = 0
+        while attempts < 20:
+            if not self.time_between((9, 30), (16, 0)):
+                time.sleep(0.2) # sleep for 0.2 seconds
+                print('sleeping for 0.2 seconds')
+                attempts += 1
+            else:
+                break
 
-        self.driver.find_element(By.ID, f"trading-order-button-{order_direction}").click()
+        if attempts == 20:
+            raise Exception(f'Error: Market orders are not allowed at this time ({self.time})')
+
+        # Press order button
+        self.driver.find_element_by_id(f"trading-order-button-{order_direction}").send_keys(Keys.RETURN)
+            
+            
 
         if log_info is True:
             print(f"Time: {self.time}, Order direction: {order_direction}, Symbol: {symbol}, "
